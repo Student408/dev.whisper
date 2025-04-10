@@ -6,6 +6,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import re
 
 from .model import Whisper, ModelDimensions
 from .tokenizer import get_tokenizer
@@ -35,6 +36,50 @@ def pad_or_trim_mel_spectrogram(mel, target_length):
         mel = mel[..., :target_length]
     
     return mel
+
+def calculate_wer(reference, hypothesis):
+    """
+    Calculate Word Error Rate between reference and hypothesis texts.
+    
+    Args:
+        reference: Reference text (string)
+        hypothesis: Hypothesis text (string) from model prediction
+        
+    Returns:
+        WER score (float)
+    """
+    # Normalize text: lowercase, remove punctuation, and split into words
+    def normalize_text(text):
+        text = text.lower()
+        text = re.sub(r'[^\w\s]', '', text)
+        return text.split()
+    
+    ref_words = normalize_text(reference)
+    hyp_words = normalize_text(hypothesis)
+    
+    # Initialize edit distance matrix
+    d = [[0 for _ in range(len(hyp_words) + 1)] for _ in range(len(ref_words) + 1)]
+    
+    # Fill the matrix
+    for i in range(len(ref_words) + 1):
+        d[i][0] = i
+    for j in range(len(hyp_words) + 1):
+        d[0][j] = j
+        
+    for i in range(1, len(ref_words) + 1):
+        for j in range(1, len(hyp_words) + 1):
+            if ref_words[i-1] == hyp_words[j-1]:
+                d[i][j] = d[i-1][j-1]
+            else:
+                substitution = d[i-1][j-1] + 1
+                insertion = d[i][j-1] + 1
+                deletion = d[i-1][j] + 1
+                d[i][j] = min(substitution, insertion, deletion)
+    
+    # Calculate WER
+    if len(ref_words) > 0:
+        return d[len(ref_words)][len(hyp_words)] / len(ref_words)
+    return 0 if len(hyp_words) == 0 else 1
 
 def train(args):
     """Main training function for training Whisper model from scratch."""
@@ -253,8 +298,8 @@ def train(args):
                 
             # Validate
             if val_loader is not None and step % args.eval_steps == 0:
-                val_loss = evaluate(model, val_loader, tokenizer, device)
-                print(f"Validation loss: {val_loss:.4f}")
+                val_loss, val_wer = evaluate(model, val_loader, tokenizer, device)
+                print(f"Validation loss: {val_loss:.4f}, WER: {val_wer:.4f}")
                 
                 # Save best model
                 if val_loss < best_val_loss:
@@ -265,8 +310,35 @@ def train(args):
                         "step": step,
                         "dims": model.dims,
                         "val_loss": val_loss,
+                        "val_wer": val_wer,
                     }, best_path)
-                    print(f"Saved best model with val_loss {val_loss:.4f}")
+                    print(f"Saved best model with val_loss {val_loss:.4f}, WER {val_wer:.4f}")
+        
+        # Validate at the end of each epoch
+        if val_loader is not None:
+            print(f"\nEvaluating at the end of epoch {epoch+1}/{args.num_epochs}...")
+            val_loss, val_wer = evaluate(model, val_loader, tokenizer, device)
+            print(f"End of epoch {epoch+1} validation - Loss: {val_loss:.4f}, WER: {val_wer:.4f}")
+            
+            # Save best model
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_path = os.path.join(args.output_dir, "best_model.pt")
+                torch.save({
+                    "model_state_dict": model.state_dict(),
+                    "step": step,
+                    "dims": model.dims,
+                    "val_loss": val_loss,
+                    "val_wer": val_wer,
+                    "epoch": epoch + 1,
+                }, best_path)
+                print(f"Saved best model with val_loss {val_loss:.4f}, WER {val_wer:.4f}")
+    
+    # Final evaluation after training completion
+    if val_loader is not None:
+        print("\nFinal evaluation after training completion...")
+        final_val_loss, final_val_wer = evaluate(model, val_loader, tokenizer, device)
+        print(f"Final validation - Loss: {final_val_loss:.4f}, WER: {final_val_wer:.4f}")
     
     # Save final model
     final_path = os.path.join(args.output_dir, "final_model.pt")
@@ -274,6 +346,8 @@ def train(args):
         "model_state_dict": model.state_dict(),
         "step": step,
         "dims": model.dims,
+        "final_val_loss": final_val_loss if val_loader is not None else None,
+        "final_val_wer": final_val_wer if val_loader is not None else None,
     }, final_path)
     print(f"Training completed. Saved final model to {final_path}")
 
@@ -282,11 +356,13 @@ def evaluate(model, dataloader, tokenizer, device):
     model.eval()
     total_loss = 0.0
     total_examples = 0
+    total_wer = 0.0
     
     with torch.no_grad():
         for batch in dataloader:
             mel_specs = batch["mel_specs"].to(device)
             tokens = batch["tokens"].to(device)
+            references = batch["text"]  # Original text references
             
             # Calculate the target length for the mel spectrogram
             # Need to ensure that after the encoder's strided convolution (stride=2),
@@ -318,8 +394,31 @@ def evaluate(model, dataloader, tokenizer, device):
             
             total_loss += loss.item() * tokens.shape[0]
             total_examples += tokens.shape[0]
+            
+            # Generate predictions for WER calculation
+            # First, get the predicted token indices
+            predictions = torch.argmax(logits, dim=-1)
+            
+            # Then decode each sequence into text
+            for i in range(len(predictions)):
+                # Remove padding and special tokens
+                pred_tokens = predictions[i].cpu().tolist()
+                # Remove -100, padding, and tokens after eot
+                if tokenizer.eot in pred_tokens:
+                    pred_tokens = pred_tokens[:pred_tokens.index(tokenizer.eot)]
+                
+                # Decode the tokens to text
+                predicted_text = tokenizer.decode(pred_tokens)
+                reference_text = references[i]
+                
+                # Calculate WER for this example
+                wer = calculate_wer(reference_text, predicted_text)
+                total_wer += wer
     
-    return total_loss / total_examples
+    avg_loss = total_loss / total_examples
+    avg_wer = total_wer / total_examples
+    
+    return avg_loss, avg_wer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Whisper model from scratch with custom vocabulary")

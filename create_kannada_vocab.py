@@ -1,6 +1,6 @@
 import argparse
 import os
-from kannada_vocab_builder import build_vocab_from_text  # Removed the dot import
+from .kannada_vocab_builder import build_vocab_from_text  # Removed the dot import
 
 def main():
     parser = argparse.ArgumentParser(description="Create and use Kannada vocabulary with Whisper")

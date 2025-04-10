@@ -12,6 +12,30 @@ from .tokenizer import get_tokenizer
 from .dataset import WhisperDataset, collate_fn
 from .audio_utils import AudioProcessor
 
+def pad_or_trim_mel_spectrogram(mel, target_length):
+    """
+    Pad or trim mel spectrogram to target length in the time dimension (last dimension).
+    
+    Args:
+        mel: Mel spectrogram tensor of shape [batch_size, n_mels, time]
+        target_length: Target length in the time dimension
+        
+    Returns:
+        Padded or trimmed mel spectrogram
+    """
+    # Get current length
+    current_length = mel.shape[-1]
+    
+    if current_length < target_length:
+        # Pad if shorter
+        pad_amount = target_length - current_length
+        mel = F.pad(mel, (0, pad_amount))
+    elif current_length > target_length:
+        # Trim if longer
+        mel = mel[..., :target_length]
+    
+    return mel
+
 def train(args):
     """Main training function for training Whisper model from scratch."""
     device = torch.device(args.device)
@@ -168,6 +192,14 @@ def train(args):
             mel_specs = batch["mel_specs"].to(device)
             tokens = batch["tokens"].to(device)
             
+            # Calculate the target length for the mel spectrogram
+            # Need to ensure that after the encoder's strided convolution (stride=2),
+            # the resulting length will match n_audio_ctx
+            target_length = model.dims.n_audio_ctx * 2
+            
+            # Pad or trim mel spectrograms to match expected length
+            mel_specs = pad_or_trim_mel_spectrogram(mel_specs, target_length)
+            
             # Forward pass through the encoder
             audio_features = model.encoder(mel_specs)
             
@@ -255,6 +287,14 @@ def evaluate(model, dataloader, tokenizer, device):
         for batch in dataloader:
             mel_specs = batch["mel_specs"].to(device)
             tokens = batch["tokens"].to(device)
+            
+            # Calculate the target length for the mel spectrogram
+            # Need to ensure that after the encoder's strided convolution (stride=2),
+            # the resulting length will match n_audio_ctx
+            target_length = model.dims.n_audio_ctx * 2
+            
+            # Pad or trim mel spectrograms to match expected length
+            mel_specs = pad_or_trim_mel_spectrogram(mel_specs, target_length)
             
             # Forward pass through the encoder
             audio_features = model.encoder(mel_specs)

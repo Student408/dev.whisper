@@ -97,7 +97,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build a tiktoken vocabulary from Kannada text")
     parser.add_argument("input", help="Input Kannada text file path")
     parser.add_argument("output", help="Output tiktoken file path")
-    parser.add_argument("--vocab-size", type=int, default=50000, help="Maximum vocabulary size")
+    parser.add_argument("--vocab-size", type=int, default=50256, help="Maximum vocabulary size")
     parser.add_argument("--include-english", action="store_true", help="Include English vocabulary")
     parser.add_argument("--english-vocab", default="assets/multilingual.tiktoken", 
                       help="Path to English vocabulary file")

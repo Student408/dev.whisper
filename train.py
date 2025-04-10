@@ -46,7 +46,7 @@ def calculate_wer(reference, hypothesis):
         hypothesis: Hypothesis text (string) from model prediction
         
     Returns:
-        WER score (float)
+        WER score (float), bounded between 0.0 and 1.0
     """
     # Normalize text: lowercase, remove punctuation, and split into words
     def normalize_text(text):
@@ -56,6 +56,10 @@ def calculate_wer(reference, hypothesis):
     
     ref_words = normalize_text(reference)
     hyp_words = normalize_text(hypothesis)
+    
+    # Edge case handling
+    if len(ref_words) == 0:
+        return 1.0 if len(hyp_words) > 0 else 0.0
     
     # Initialize edit distance matrix
     d = [[0 for _ in range(len(hyp_words) + 1)] for _ in range(len(ref_words) + 1)]
@@ -76,10 +80,54 @@ def calculate_wer(reference, hypothesis):
                 deletion = d[i-1][j] + 1
                 d[i][j] = min(substitution, insertion, deletion)
     
-    # Calculate WER
-    if len(ref_words) > 0:
-        return d[len(ref_words)][len(hyp_words)] / len(ref_words)
-    return 0 if len(hyp_words) == 0 else 1
+    # Calculate WER and bound it to maximum of 1.0
+    return min(1.0, d[len(ref_words)][len(hyp_words)] / len(ref_words))
+
+def calculate_cer(reference, hypothesis):
+    """
+    Calculate Character Error Rate between reference and hypothesis texts.
+    
+    Args:
+        reference: Reference text (string)
+        hypothesis: Hypothesis text (string) from model prediction
+        
+    Returns:
+        CER score (float), bounded between 0.0 and 1.0
+    """
+    # Normalize text: lowercase and remove excess whitespace
+    def normalize_text(text):
+        text = text.lower().strip()
+        text = re.sub(r'\s+', ' ', text)
+        return text
+    
+    ref_chars = list(normalize_text(reference))
+    hyp_chars = list(normalize_text(hypothesis))
+    
+    # Edge case handling
+    if len(ref_chars) == 0:
+        return 1.0 if len(hyp_chars) > 0 else 0.0
+    
+    # Initialize edit distance matrix
+    d = [[0 for _ in range(len(hyp_chars) + 1)] for _ in range(len(ref_chars) + 1)]
+    
+    # Fill the matrix
+    for i in range(len(ref_chars) + 1):
+        d[i][0] = i
+    for j in range(len(hyp_chars) + 1):
+        d[0][j] = j
+        
+    for i in range(1, len(ref_chars) + 1):
+        for j in range(1, len(hyp_chars) + 1):
+            if ref_chars[i-1] == hyp_chars[j-1]:
+                d[i][j] = d[i-1][j-1]
+            else:
+                substitution = d[i-1][j-1] + 1
+                insertion = d[i][j-1] + 1
+                deletion = d[i-1][j] + 1
+                d[i][j] = min(substitution, insertion, deletion)
+    
+    # Calculate CER and bound it to maximum of 1.0
+    return min(1.0, d[len(ref_chars)][len(hyp_chars)] / len(ref_chars))
 
 def train(args):
     """Main training function for training Whisper model from scratch."""
@@ -298,8 +346,8 @@ def train(args):
                 
             # Validate
             if val_loader is not None and step % args.eval_steps == 0:
-                val_loss, val_wer = evaluate(model, val_loader, tokenizer, device)
-                print(f"Validation loss: {val_loss:.4f}, WER: {val_wer:.4f}")
+                val_loss, val_wer, val_cer = evaluate(model, val_loader, tokenizer, device)
+                print(f"Validation loss: {val_loss:.4f}, WER: {val_wer:.4f}, CER: {val_cer:.4f}")
                 
                 # Save best model
                 if val_loss < best_val_loss:
@@ -311,14 +359,15 @@ def train(args):
                         "dims": model.dims,
                         "val_loss": val_loss,
                         "val_wer": val_wer,
+                        "val_cer": val_cer,
                     }, best_path)
-                    print(f"Saved best model with val_loss {val_loss:.4f}, WER {val_wer:.4f}")
+                    print(f"Saved best model with val_loss {val_loss:.4f}, WER: {val_wer:.4f}, CER: {val_cer:.4f}")
         
         # Validate at the end of each epoch
         if val_loader is not None:
             print(f"\nEvaluating at the end of epoch {epoch+1}/{args.num_epochs}...")
-            val_loss, val_wer = evaluate(model, val_loader, tokenizer, device)
-            print(f"End of epoch {epoch+1} validation - Loss: {val_loss:.4f}, WER: {val_wer:.4f}")
+            val_loss, val_wer, val_cer = evaluate(model, val_loader, tokenizer, device)
+            print(f"End of epoch {epoch+1} validation - Loss: {val_loss:.4f}, WER: {val_wer:.4f}, CER: {val_cer:.4f}")
             
             # Save best model
             if val_loss < best_val_loss:
@@ -330,15 +379,16 @@ def train(args):
                     "dims": model.dims,
                     "val_loss": val_loss,
                     "val_wer": val_wer,
+                    "val_cer": val_cer,
                     "epoch": epoch + 1,
                 }, best_path)
-                print(f"Saved best model with val_loss {val_loss:.4f}, WER {val_wer:.4f}")
+                print(f"Saved best model with val_loss {val_loss:.4f}, WER: {val_wer:.4f}, CER: {val_cer:.4f}")
     
     # Final evaluation after training completion
     if val_loader is not None:
         print("\nFinal evaluation after training completion...")
-        final_val_loss, final_val_wer = evaluate(model, val_loader, tokenizer, device)
-        print(f"Final validation - Loss: {final_val_loss:.4f}, WER: {final_val_wer:.4f}")
+        final_val_loss, final_val_wer, final_val_cer = evaluate(model, val_loader, tokenizer, device)
+        print(f"Final validation - Loss: {final_val_loss:.4f}, WER: {final_val_wer:.4f}, CER: {final_val_cer:.4f}")
     
     # Save final model
     final_path = os.path.join(args.output_dir, "final_model.pt")
@@ -348,6 +398,7 @@ def train(args):
         "dims": model.dims,
         "final_val_loss": final_val_loss if val_loader is not None else None,
         "final_val_wer": final_val_wer if val_loader is not None else None,
+        "final_val_cer": final_val_cer if val_loader is not None else None,
     }, final_path)
     print(f"Training completed. Saved final model to {final_path}")
 
@@ -357,6 +408,10 @@ def evaluate(model, dataloader, tokenizer, device):
     total_loss = 0.0
     total_examples = 0
     total_wer = 0.0
+    total_cer = 0.0
+    
+    # Log some examples to help debug
+    debug_examples = []
     
     with torch.no_grad():
         for batch in dataloader:
@@ -416,14 +471,34 @@ def evaluate(model, dataloader, tokenizer, device):
                 reference_text = tokenizer.decode(ref_tokens)
                 predicted_text = tokenizer.decode(pred_tokens)
                 
-                # Calculate WER for this example
+                # Calculate WER and CER for this example
                 wer = calculate_wer(reference_text, predicted_text)
+                cer = calculate_cer(reference_text, predicted_text)
                 total_wer += wer
+                total_cer += cer
+                
+                # Store some examples for debugging
+                if len(debug_examples) < 5:
+                    debug_examples.append({
+                        "reference": reference_text,
+                        "prediction": predicted_text,
+                        "wer": wer,
+                        "cer": cer
+                    })
     
     avg_loss = total_loss / total_examples
     avg_wer = total_wer / total_examples
+    avg_cer = total_cer / total_examples
     
-    return avg_loss, avg_wer
+    # Print debug examples
+    print("\nDebug examples:")
+    for i, example in enumerate(debug_examples):
+        print(f"Example {i+1}:")
+        print(f"  Reference: '{example['reference']}'")
+        print(f"  Prediction: '{example['prediction']}'")
+        print(f"  WER: {example['wer']:.4f}, CER: {example['cer']:.4f}")
+    
+    return avg_loss, avg_wer, avg_cer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Whisper model from scratch with custom vocabulary")

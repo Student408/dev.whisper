@@ -1,6 +1,6 @@
 import argparse
 import os
-from .kannada_vocab_builder import build_vocab_from_text
+from kannada_vocab_builder import build_vocab_from_text  # Removed the dot import
 
 def main():
     parser = argparse.ArgumentParser(description="Create and use Kannada vocabulary with Whisper")
@@ -11,8 +11,24 @@ def main():
                         help="Merge with English vocabulary")
     parser.add_argument("--english-vocab", default="assets/multilingual.tiktoken",
                         help="Path to English vocabulary file")
+    parser.add_argument("--extract-from-csv", help="Extract Kannada text from training CSV")
     
     args = parser.parse_args()
+    
+    # Extract text from CSV if specified
+    if args.extract_from_csv:
+        import pandas as pd
+        print(f"Extracting text from CSV file: {args.extract_from_csv}")
+        df = pd.read_csv(args.extract_from_csv)
+        
+        # Extract transcripts and save to a temporary file
+        temp_file = "temp_kannada_text.txt"
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            for transcript in df['transcript']:
+                f.write(transcript + '\n')
+        
+        args.input = temp_file
+        print(f"Extracted {len(df)} transcripts to temporary file")
     
     # Make sure the output directory exists
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)

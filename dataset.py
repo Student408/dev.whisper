@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import torch
 import torchaudio
+import numpy as np
 from torch.utils.data import Dataset
 
 class WhisperDataset(Dataset):
@@ -13,6 +14,16 @@ class WhisperDataset(Dataset):
         self.sample_rate = sample_rate
         self.max_length = max_length
         print(f"Loaded dataset with {len(self.data)} entries")
+
+        # Validate file paths
+        missing_files = []
+        for idx, row in self.data.iterrows():
+            if not os.path.exists(row['audio_filepath']):
+                missing_files.append(row['audio_filepath'])
+        
+        if missing_files:
+            print(f"Warning: {len(missing_files)} audio files not found.")
+            print(f"First few missing files: {missing_files[:5]}")
         
     def __len__(self):
         return len(self.data)
@@ -23,29 +34,36 @@ class WhisperDataset(Dataset):
         
         # Load audio file
         try:
-            waveform, sr = torchaudio.load(audio_path)
-            
-            # Convert to mono if necessary
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-            # Resample if needed
-            if sr != self.sample_rate:
-                waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(waveform)
-            
-            # Trim to max length
-            if waveform.shape[1] > self.max_length:
-                waveform = waveform[:, :self.max_length]
+            if os.path.exists(audio_path):
+                waveform, sr = torchaudio.load(audio_path)
                 
+                # Convert to mono if necessary
+                if waveform.shape[0] > 1:
+                    waveform = torch.mean(waveform, dim=0, keepdim=True)
+                
+                # Resample if needed
+                if sr != self.sample_rate:
+                    waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(waveform)
+                
+                # Ensure minimum length and handling for max length
+                if waveform.shape[1] > self.max_length:
+                    # Take the center portion
+                    start = (waveform.shape[1] - self.max_length) // 2
+                    waveform = waveform[:, start:start + self.max_length]
+            else:
+                # Create synthetic white noise for missing files
+                print(f"File not found, creating synthetic audio: {audio_path}")
+                waveform = torch.randn(1, self.sample_rate)  # 1 second of white noise
+            
             # Ensure minimum length for processing
-            if waveform.shape[1] < 1000:  # Ensure at least 1000 samples (~62.5ms @16kHz)
-                padding = torch.zeros(1, 1000 - waveform.shape[1])
+            if waveform.shape[1] < 16000:  # At least 1 second
+                padding = torch.zeros(1, 16000 - waveform.shape[1])
                 waveform = torch.cat([waveform, padding], dim=1)
-        
+                
         except Exception as e:
             print(f"Error loading audio {audio_path}: {str(e)}")
-            # Create a dummy waveform in case of failure
-            waveform = torch.zeros(1, 16000)  # 1 second of silence
+            # Create synthetic white noise audio in case of error
+            waveform = torch.randn(1, self.sample_rate)  # 1 second of white noise
         
         # Tokenize transcript if tokenizer is provided
         if self.tokenizer is not None:

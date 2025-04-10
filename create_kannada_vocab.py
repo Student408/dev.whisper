@@ -1,6 +1,6 @@
 import argparse
 import os
-from kannada_vocab_builder import build_vocab_from_text
+from .kannada_vocab_builder import build_vocab_from_text
 
 def main():
     parser = argparse.ArgumentParser(description="Create and use Kannada vocabulary with Whisper")

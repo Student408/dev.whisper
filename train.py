@@ -362,11 +362,8 @@ def evaluate(model, dataloader, tokenizer, device):
         for batch in dataloader:
             mel_specs = batch["mel_specs"].to(device)
             tokens = batch["tokens"].to(device)
-            references = batch["text"]  # Original text references
             
             # Calculate the target length for the mel spectrogram
-            # Need to ensure that after the encoder's strided convolution (stride=2),
-            # the resulting length will match n_audio_ctx
             target_length = model.dims.n_audio_ctx * 2
             
             # Pad or trim mel spectrograms to match expected length
@@ -401,15 +398,23 @@ def evaluate(model, dataloader, tokenizer, device):
             
             # Then decode each sequence into text
             for i in range(len(predictions)):
-                # Remove padding and special tokens
+                # Get reference tokens (ground truth)
+                ref_tokens = tokens[i].cpu().tolist()
+                # Remove padding tokens (-100)
+                ref_tokens = [t for t in ref_tokens if t != -100]
+                # Remove tokens after eot if present
+                if tokenizer.eot in ref_tokens:
+                    ref_tokens = ref_tokens[:ref_tokens.index(tokenizer.eot)]
+                
+                # Get predicted tokens
                 pred_tokens = predictions[i].cpu().tolist()
-                # Remove -100, padding, and tokens after eot
+                # Remove tokens after eot if present
                 if tokenizer.eot in pred_tokens:
                     pred_tokens = pred_tokens[:pred_tokens.index(tokenizer.eot)]
                 
-                # Decode the tokens to text
+                # Decode both to text
+                reference_text = tokenizer.decode(ref_tokens)
                 predicted_text = tokenizer.decode(pred_tokens)
-                reference_text = references[i]
                 
                 # Calculate WER for this example
                 wer = calculate_wer(reference_text, predicted_text)

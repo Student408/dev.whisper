@@ -328,8 +328,25 @@ class Tokenizer:
 
 
 @lru_cache(maxsize=None)
-def get_encoding(name: str = "gpt2", num_languages: int = 99):
-    vocab_path = os.path.join(os.path.dirname(__file__), "assets", f"{name}.tiktoken")
+def get_encoding(name: str = "gpt2", num_languages: int = 99, custom_vocab_path: Optional[str] = None):
+    """
+    Get tokenizer encoding.
+    
+    Args:
+        name: Base encoding name (gpt2 or multilingual)
+        num_languages: Number of languages to include in special tokens
+        custom_vocab_path: Path to custom vocabulary file (.tiktoken format)
+    """
+    # Use custom vocabulary if provided, otherwise use the default
+    if custom_vocab_path and os.path.exists(custom_vocab_path):
+        vocab_path = custom_vocab_path
+    else:
+        vocab_path = os.path.join(os.path.dirname(__file__), "assets", f"{name}.tiktoken")
+    
+    # Check if vocab path exists
+    if not os.path.exists(vocab_path):
+        raise FileNotFoundError(f"Vocabulary file not found: {vocab_path}")
+    
     ranks = {
         base64.b64decode(token): int(rank)
         for token, rank in (line.split() for line in open(vocab_path) if line)
@@ -370,6 +387,7 @@ def get_tokenizer(
     num_languages: int = 99,
     language: Optional[str] = None,
     task: Optional[str] = None,  # Literal["transcribe", "translate", None]
+    custom_vocab_path: Optional[str] = None,
 ) -> Tokenizer:
     if language is not None:
         language = language.lower()
@@ -388,7 +406,7 @@ def get_tokenizer(
         language = None
         task = None
 
-    encoding = get_encoding(name=encoding_name, num_languages=num_languages)
+    encoding = get_encoding(name=encoding_name, num_languages=num_languages, custom_vocab_path=custom_vocab_path)
 
     return Tokenizer(
         encoding=encoding, num_languages=num_languages, language=language, task=task

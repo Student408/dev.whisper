@@ -19,7 +19,7 @@ def tokenize_text(text: str) -> List[str]:
 def build_vocab_from_text(
     input_file: str, 
     output_file: str, 
-    vocab_size: int = 50000, 
+    vocab_size: int = 50256, 
     include_english: bool = True, 
     english_vocab_path: Optional[str] = None
 ):

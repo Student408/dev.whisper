@@ -7,16 +7,17 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .model import Whisper
+from .model import Whisper, ModelDimensions
 from .tokenizer import get_tokenizer
 from .dataset import WhisperDataset, collate_fn
 from .audio_utils import AudioProcessor
 
 def train(args):
-    """Main training function for fine-tuning Whisper with custom vocabulary."""
+    """Main training function for training Whisper model from scratch."""
     device = torch.device(args.device)
     
     # Load tokenizer with custom vocabulary
+    print(f"Loading tokenizer with custom vocabulary from {args.custom_vocab_path}")
     tokenizer = get_tokenizer(
         multilingual=True,
         language=args.language,
@@ -33,6 +34,7 @@ def train(args):
     )
     
     # Create dataset
+    print(f"Loading training dataset from {args.train_csv}")
     train_dataset = WhisperDataset(
         args.train_csv,
         tokenizer=tokenizer,
@@ -52,6 +54,7 @@ def train(args):
     # Create validation dataloader if provided
     val_loader = None
     if args.val_csv:
+        print(f"Loading validation dataset from {args.val_csv}")
         val_dataset = WhisperDataset(
             args.val_csv,
             tokenizer=tokenizer,
@@ -67,13 +70,80 @@ def train(args):
             pin_memory=True,
         )
     
-    # Load model
-    if not os.path.exists(args.model_path):
-        raise ValueError(f"Model path does not exist: {args.model_path}")
+    # Create a new model from scratch
+    print(f"Creating new model with size {args.model_size}")
     
-    checkpoint = torch.load(args.model_path, map_location=device)
-    model = Whisper(checkpoint["dims"]).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    # Define model dimensions based on size
+    if args.model_size == "tiny":
+        dims = ModelDimensions(
+            n_mels=80,
+            n_audio_ctx=1500,
+            n_audio_state=384,
+            n_audio_head=6,
+            n_audio_layer=4,
+            n_vocab=tokenizer.encoding.n_vocab,
+            n_text_ctx=448,
+            n_text_state=384,
+            n_text_head=6,
+            n_text_layer=4
+        )
+    elif args.model_size == "base":
+        dims = ModelDimensions(
+            n_mels=80,
+            n_audio_ctx=1500,
+            n_audio_state=512,
+            n_audio_head=8,
+            n_audio_layer=6,
+            n_vocab=tokenizer.encoding.n_vocab,
+            n_text_ctx=448,
+            n_text_state=512,
+            n_text_head=8,
+            n_text_layer=6
+        )
+    elif args.model_size == "small":
+        dims = ModelDimensions(
+            n_mels=80,
+            n_audio_ctx=1500,
+            n_audio_state=768,
+            n_audio_head=12,
+            n_audio_layer=12,
+            n_vocab=tokenizer.encoding.n_vocab,
+            n_text_ctx=448,
+            n_text_state=768,
+            n_text_head=12,
+            n_text_layer=12
+        )
+    elif args.model_size == "medium":
+        dims = ModelDimensions(
+            n_mels=80,
+            n_audio_ctx=1500,
+            n_audio_state=1024,
+            n_audio_head=16,
+            n_audio_layer=24,
+            n_vocab=tokenizer.encoding.n_vocab,
+            n_text_ctx=448,
+            n_text_state=1024,
+            n_text_head=16,
+            n_text_layer=24
+        )
+    else:  # Default to base if size not recognized
+        dims = ModelDimensions(
+            n_mels=80,
+            n_audio_ctx=1500,
+            n_audio_state=512,
+            n_audio_head=8,
+            n_audio_layer=6,
+            n_vocab=tokenizer.encoding.n_vocab,
+            n_text_ctx=448,
+            n_text_state=512,
+            n_text_head=8,
+            n_text_layer=6
+        )
+    
+    # Create new model
+    model = Whisper(dims).to(device)
+    print(f"Created new model with {sum(p.numel() for p in model.parameters())/1e6:.1f}M parameters")
+    print(f"Vocabulary size: {tokenizer.encoding.n_vocab}")
     
     # Set up optimizer and scheduler
     optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -82,6 +152,10 @@ def train(args):
     # Training loop
     step = 0
     best_val_loss = float("inf")
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    print(f"Output directory: {args.output_dir}")
     
     for epoch in range(args.num_epochs):
         # Training
@@ -135,7 +209,6 @@ def train(args):
             
             # Save checkpoint
             if step % args.save_steps == 0:
-                os.makedirs(args.output_dir, exist_ok=True)
                 checkpoint_path = os.path.join(args.output_dir, f"checkpoint-{step}.pt")
                 torch.save({
                     "model_state_dict": model.state_dict(),
@@ -209,21 +282,23 @@ def evaluate(model, dataloader, tokenizer, device):
     return total_loss / total_examples
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Whisper model with custom vocabulary")
+    parser = argparse.ArgumentParser(description="Train Whisper model from scratch with custom vocabulary")
     
     # Data arguments
     parser.add_argument("--train-csv", required=True, help="Path to training CSV file")
     parser.add_argument("--val-csv", help="Path to validation CSV file (optional)")
     
     # Model arguments
-    parser.add_argument("--model-path", required=True, help="Path to pretrained model")
+    parser.add_argument("--model-size", default="base", 
+                       choices=["tiny", "base", "small", "medium"], 
+                       help="Model size for training from scratch")
     parser.add_argument("--custom-vocab-path", required=True, help="Path to custom vocabulary file")
     parser.add_argument("--language", default="kn", help="Language code (e.g., 'kn' for Kannada)")
     
     # Training arguments
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
     parser.add_argument("--num-epochs", type=int, default=5, help="Number of epochs")
-    parser.add_argument("--learning-rate", type=float, default=1e-5, help="Learning rate")
+    parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--max-steps", type=int, default=10000, help="Maximum training steps")

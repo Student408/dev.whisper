@@ -12,6 +12,7 @@ class WhisperDataset(Dataset):
         self.tokenizer = tokenizer
         self.sample_rate = sample_rate
         self.max_length = max_length
+        print(f"Loaded dataset with {len(self.data)} entries")
         
     def __len__(self):
         return len(self.data)
@@ -21,25 +22,41 @@ class WhisperDataset(Dataset):
         transcript = self.data.iloc[idx]['transcript']
         
         # Load audio file
-        waveform, sr = torchaudio.load(audio_path)
+        try:
+            waveform, sr = torchaudio.load(audio_path)
+            
+            # Convert to mono if necessary
+            if waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
+            
+            # Resample if needed
+            if sr != self.sample_rate:
+                waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(waveform)
+            
+            # Trim to max length
+            if waveform.shape[1] > self.max_length:
+                waveform = waveform[:, :self.max_length]
+                
+            # Ensure minimum length for processing
+            if waveform.shape[1] < 1000:  # Ensure at least 1000 samples (~62.5ms @16kHz)
+                padding = torch.zeros(1, 1000 - waveform.shape[1])
+                waveform = torch.cat([waveform, padding], dim=1)
         
-        # Convert to mono if necessary
-        if waveform.shape[0] > 1:
-            waveform = torch.mean(waveform, dim=0, keepdim=True)
-        
-        # Resample if needed
-        if sr != self.sample_rate:
-            waveform = torchaudio.transforms.Resample(sr, self.sample_rate)(waveform)
-        
-        # Trim to max length
-        if waveform.shape[1] > self.max_length:
-            waveform = waveform[:, :self.max_length]
+        except Exception as e:
+            print(f"Error loading audio {audio_path}: {str(e)}")
+            # Create a dummy waveform in case of failure
+            waveform = torch.zeros(1, 16000)  # 1 second of silence
         
         # Tokenize transcript if tokenizer is provided
         if self.tokenizer is not None:
-            tokens = self.tokenizer.encode(transcript)
-            # Add end of text token
-            tokens = torch.tensor(tokens + [self.tokenizer.eot])
+            try:
+                tokens = self.tokenizer.encode(transcript)
+                # Add end of text token
+                tokens = torch.tensor(tokens + [self.tokenizer.eot])
+            except Exception as e:
+                print(f"Error tokenizing transcript '{transcript}': {str(e)}")
+                # Create dummy tokens in case of failure
+                tokens = torch.tensor([self.tokenizer.sot, self.tokenizer.eot])
         else:
             tokens = transcript
         

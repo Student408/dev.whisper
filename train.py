@@ -129,6 +129,21 @@ def calculate_cer(reference, hypothesis):
     # Calculate CER and bound it to maximum of 1.0
     return min(1.0, d[len(ref_chars)][len(hyp_chars)] / len(ref_chars))
 
+def truncate_sequence(tokens, max_length):
+    """
+    Truncate a token sequence to the maximum allowed length.
+    
+    Args:
+        tokens: Token tensor of shape [batch_size, seq_length]
+        max_length: Maximum allowed sequence length
+        
+    Returns:
+        Truncated token tensor
+    """
+    if tokens.shape[1] <= max_length:
+        return tokens
+    return tokens[:, :max_length]
+
 def train(args):
     """Main training function for training Whisper model from scratch."""
     device = torch.device(args.device)
@@ -261,6 +276,7 @@ def train(args):
     model = Whisper(dims).to(device)
     print(f"Created new model with {sum(p.numel() for p in model.parameters())/1e6:.1f}M parameters")
     print(f"Vocabulary size: {tokenizer.encoding.n_vocab}")
+    print(f"Maximum text context length: {model.dims.n_text_ctx}")
     
     # Set up optimizer and scheduler
     optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -280,10 +296,22 @@ def train(args):
         train_loss = 0.0
         train_examples = 0
         
+        # Statistics for sequence lengths
+        max_seq_length = 0
+        total_sequences = 0
+        truncated_sequences = 0
+        
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.num_epochs}")
         for batch in progress_bar:
             mel_specs = batch["mel_specs"].to(device)
             tokens = batch["tokens"].to(device)
+            
+            # Track sequence length statistics
+            batch_max_len = tokens.shape[1]
+            max_seq_length = max(max_seq_length, batch_max_len)
+            total_sequences += tokens.shape[0]
+            if batch_max_len > model.dims.n_text_ctx:
+                truncated_sequences += tokens.shape[0]
             
             # Calculate the target length for the mel spectrogram
             # Need to ensure that after the encoder's strided convolution (stride=2),
@@ -296,10 +324,15 @@ def train(args):
             # Forward pass through the encoder
             audio_features = model.encoder(mel_specs)
             
+            # Ensure tokens don't exceed maximum context length
+            # Save 1 position for the SOT token
+            max_token_length = model.dims.n_text_ctx - 1
+            tokens_truncated = truncate_sequence(tokens, max_token_length)
+            
             # Teacher forcing for decoder input (shift right)
             decoder_input = torch.cat([
-                torch.ones((tokens.shape[0], 1), dtype=torch.long, device=device) * tokenizer.sot,
-                tokens[:, :-1]
+                torch.ones((tokens_truncated.shape[0], 1), dtype=torch.long, device=device) * tokenizer.sot,
+                tokens_truncated[:, :-1]
             ], dim=1)
             decoder_input = decoder_input.masked_fill(decoder_input == -100, tokenizer.eot)
             
@@ -309,7 +342,7 @@ def train(args):
             # Calculate loss
             loss = F.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]),
-                tokens.reshape(-1),
+                tokens_truncated.reshape(-1),
                 ignore_index=-100,
             )
             
@@ -362,6 +395,11 @@ def train(args):
                         "val_cer": val_cer,
                     }, best_path)
                     print(f"Saved best model with val_loss {val_loss:.4f}, WER: {val_wer:.4f}, CER: {val_cer:.4f}")
+        
+        # Print sequence length statistics after each epoch
+        print(f"\nSequence length statistics for epoch {epoch+1}:")
+        print(f"  Maximum sequence length: {max_seq_length}")
+        print(f"  Truncated sequences: {truncated_sequences}/{total_sequences} ({truncated_sequences/total_sequences*100:.2f}%)")
         
         # Validate at the end of each epoch
         if val_loader is not None:
@@ -427,10 +465,15 @@ def evaluate(model, dataloader, tokenizer, device):
             # Forward pass through the encoder
             audio_features = model.encoder(mel_specs)
             
+            # Ensure tokens don't exceed maximum context length
+            # Save 1 position for the SOT token
+            max_token_length = model.dims.n_text_ctx - 1
+            tokens_truncated = truncate_sequence(tokens, max_token_length)
+            
             # Teacher forcing for decoder input
             decoder_input = torch.cat([
-                torch.ones((tokens.shape[0], 1), dtype=torch.long, device=device) * tokenizer.sot,
-                tokens[:, :-1]
+                torch.ones((tokens_truncated.shape[0], 1), dtype=torch.long, device=device) * tokenizer.sot,
+                tokens_truncated[:, :-1]
             ], dim=1)
             decoder_input = decoder_input.masked_fill(decoder_input == -100, tokenizer.eot)
             
@@ -440,12 +483,12 @@ def evaluate(model, dataloader, tokenizer, device):
             # Calculate loss
             loss = F.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]),
-                tokens.reshape(-1),
+                tokens_truncated.reshape(-1),
                 ignore_index=-100,
             )
             
-            total_loss += loss.item() * tokens.shape[0]
-            total_examples += tokens.shape[0]
+            total_loss += loss.item() * tokens_truncated.shape[0]
+            total_examples += tokens_truncated.shape[0]
             
             # Generate predictions for WER calculation
             # First, get the predicted token indices

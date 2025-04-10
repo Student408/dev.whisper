@@ -7,10 +7,10 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from model import Whisper
-from tokenizer import get_tokenizer
-from dataset import WhisperDataset, collate_fn
-from audio_utils import AudioProcessor
+from .model import Whisper
+from .tokenizer import get_tokenizer
+from .dataset import WhisperDataset, collate_fn
+from .audio_utils import AudioProcessor
 
 def train(args):
     """Main training function for fine-tuning Whisper with custom vocabulary."""
